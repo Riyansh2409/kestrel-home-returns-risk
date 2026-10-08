@@ -12,3 +12,6 @@ data/
 
 # CatBoost generated training logs
 **/catboost_info/
+
+models/
+*.cbm
