@@ -1,0 +1,2 @@
+model,threshold,accuracy,precision,recall,f1,flagged_orders,true_returns_caught,false_holds,missed_returns
+CatBoost,0.55,0.834777,0.330544,0.473054,0.389163,239,79,160,88

@@ -1,0 +1,10 @@
+﻿pandas
+numpy
+scikit-learn
+catboost
+fastapi
+uvicorn
+streamlit
+requests
+pydantic
+matplotlib

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Raw Data
+data/
+
+# Generated / local files
+*.pdf
+
+# CatBoost generated training logs
+**/catboost_info/
