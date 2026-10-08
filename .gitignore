@@ -15,3 +15,14 @@ data/
 
 models/
 *.cbm
+
+# Runtime / local files
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Streamlit
+.streamlit/
+
+# CatBoost training logs
+catboost_info/

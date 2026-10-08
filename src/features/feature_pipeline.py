@@ -241,6 +241,102 @@ def _add_note_features(
     return df
 
 
+def _add_bucket_features(
+    df: pd.DataFrame,
+    bucket_reference: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """
+    Add categorical bucket features used by the trained CatBoost model.
+
+    bucket_reference must be the original training dataframe so that
+    order-value quantile boundaries remain identical between training
+    and inference.
+    """
+
+    # -------------------------------------------------------------
+    # 1. Discount bucket
+    # -------------------------------------------------------------
+
+    df["discount_bucket"] = pd.cut(
+        df["discount_pct"],
+        bins=[-1, 0, 10, 20, 30, 40, 100],
+        labels=[
+            "0%",
+            "1-10%",
+            "11-20%",
+            "21-30%",
+            "31-40%",
+            "40%+",
+        ],
+    )
+
+    # -------------------------------------------------------------
+    # 2. Prior return rate bucket
+    # -------------------------------------------------------------
+
+    df["prior_return_rate"] = np.where(
+        df["customer_prior_orders"] > 0,
+        df["customer_prior_returns"]
+        / df["customer_prior_orders"],
+        0.0,
+    )
+
+    df["prior_return_rate_bucket"] = pd.cut(
+        df["prior_return_rate"],
+        bins=[-0.001, 0, 0.25, 0.5, 0.75, 1.0],
+        labels=[
+            "0%",
+            "1-25%",
+            "26-50%",
+            "51-75%",
+            "76-100%",
+        ],
+    )
+
+    # -------------------------------------------------------------
+    # 3. Order value bucket
+    # -------------------------------------------------------------
+
+    if bucket_reference is None:
+        raise ValueError(
+            "bucket_reference is required to create "
+            "order_value_bucket."
+        )
+
+    reference_buckets = pd.qcut(
+        bucket_reference["order_value_inr"],
+        q=5,
+        duplicates="drop",
+    )
+
+    intervals = reference_buckets.cat.categories
+
+    edges = [intervals[0].left] + [
+        interval.right
+        for interval in intervals
+    ]
+
+    df["order_value_bucket"] = pd.cut(
+        df["order_value_inr"],
+        bins=edges,
+        include_lowest=True,
+    )
+
+    # Convert bucket features to strings for CatBoost.
+    for column in [
+        "discount_bucket",
+        "prior_return_rate_bucket",
+        "order_value_bucket",
+    ]:
+        df[column] = (
+            df[column]
+            .fillna("UNKNOWN")
+            .astype(str)
+        )
+
+    return df
+
+
 # ---------------------------------------------------------------------
 # Main feature pipeline
 # ---------------------------------------------------------------------
@@ -250,6 +346,7 @@ def build_features(
     customers: pd.DataFrame,
     products: pd.DataFrame,
     is_train: bool = False,
+    bucket_reference: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Build model-ready features from raw Kestrel order data.
@@ -267,6 +364,10 @@ def build_features(
 
     is_train:
         If True, preserves the `returned` target column.
+
+    bucket_reference:
+        Training dataframe used to calculate stable order-value
+        quantile boundaries.
 
     Returns
     -------
@@ -331,23 +432,28 @@ def build_features(
     df = _add_note_features(df)
 
     # -------------------------------------------------------------
-    # 8. Additional numerical transformations
+    # 8. Bucket features used by the trained CatBoost model
     # -------------------------------------------------------------
 
-    # Order values are highly skewed, so log transformation gives
-    # models another smoother representation.
+    df = _add_bucket_features(
+        df,
+        bucket_reference=bucket_reference,
+    )
+
+    # -------------------------------------------------------------
+    # 9. Additional numerical transformations
+    # -------------------------------------------------------------
+
     df["log_order_value"] = np.log1p(
         df["order_value_inr"].clip(lower=0)
     )
 
-    # Log transform customer order history as well.
     df["log_customer_prior_orders"] = np.log1p(
         df["customer_prior_orders"].clip(lower=0)
     )
 
     # -------------------------------------------------------------
-    # 9. Remove raw text / identifiers that should not be directly
-    #    learned by the baseline model.
+    # 10. Remove raw text / identifiers
     # -------------------------------------------------------------
 
     columns_to_drop = [
@@ -362,7 +468,6 @@ def build_features(
         "launch_date",
     ]
 
-    # Keep target only when processing training data.
     if not is_train:
         columns_to_drop.append("returned")
 
@@ -372,7 +477,7 @@ def build_features(
     )
 
     # -------------------------------------------------------------
-    # 10. Convert binary Y/N fields
+    # 11. Convert binary Y/N fields
     # -------------------------------------------------------------
 
     binary_mapping = {
@@ -380,7 +485,10 @@ def build_features(
         "N": 0,
     }
 
-    for column in ["is_gift", "shield_member"]:
+    for column in [
+        "is_gift",
+        "shield_member",
+    ]:
         if column in df.columns:
             df[column] = (
                 df[column]
@@ -390,7 +498,7 @@ def build_features(
             )
 
     # -------------------------------------------------------------
-    # 11. Handle obvious numeric missing values
+    # 12. Handle obvious numeric missing values
     # -------------------------------------------------------------
 
     numeric_columns = df.select_dtypes(
@@ -405,7 +513,7 @@ def build_features(
         )
 
     # -------------------------------------------------------------
-    # 12. Ensure categorical columns are strings
+    # 13. Ensure categorical columns are strings
     # -------------------------------------------------------------
 
     categorical_columns = [
@@ -416,6 +524,9 @@ def build_features(
         "city",
         "state",
         "delivery_pincode",
+        "discount_bucket",
+        "prior_return_rate_bucket",
+        "order_value_bucket",
     ]
 
     for column in categorical_columns:
@@ -452,6 +563,7 @@ def prepare_train_test(
         customers,
         products,
         is_train=True,
+        bucket_reference=train,
     )
 
     test_features = build_features(
@@ -459,6 +571,7 @@ def prepare_train_test(
         customers,
         products,
         is_train=False,
+        bucket_reference=train,
     )
 
     y_train = train_features.pop("returned")
